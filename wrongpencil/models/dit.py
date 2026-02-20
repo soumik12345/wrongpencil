@@ -173,3 +173,72 @@ class PatchEmbed(nnx.Module):
             x, "b h w c -> b (h w) c", h=num_height_patches, w=num_width_patches
         )
         return x
+
+
+def modulate(x, shift, scale):
+    return x * (1 + scale[:, None]) + shift[:, None]
+
+
+class DITBlock(nnx.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.mlp_ratio = mlp_ratio
+
+        self.norm1 = nnx.LayerNorm(
+            num_features=hidden_size,
+            use_bias=False,
+            use_scale=False,
+            rngs=rngs,
+        )
+        self.norm2 = nnx.LayerNorm(
+            num_features=hidden_size,
+            use_bias=False,
+            use_scale=False,
+            rngs=rngs,
+        )
+        self.adaLN_modulation = nnx.Linear(
+            in_features=hidden_size,
+            out_features=6 * hidden_size,
+            kernel_init=nnx.initializers.constant(0.0),
+            rngs=rngs,
+        )
+        self.attention = nnx.MultiHeadAttention(
+            num_heads=num_heads,
+            in_features=hidden_size,
+            kernel_init=nnx.initializers.xavier_uniform(),
+            rngs=rngs,
+        )
+        self.mlp = MLPBlock(
+            in_features=hidden_size,
+            mlp_dimension=int(hidden_size * mlp_ratio),
+            rngs=rngs,
+        )
+
+    def __call__(self, x, c):
+        # calculate adaLN modulation parameters
+        c = nnx.silu(c)
+        c = self.adaLN_modulation(c)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(
+            c, 6, axis=-1
+        )
+
+        # attention residual
+        x_norm = self.norm1(x)
+        x_modulated = modulate(x_norm, shift_msa, scale_msa)
+        attn_x = self.attention(x_modulated)
+        x = x + (gate_msa[:, None] * attn_x)
+
+        # MLP residual
+        x_norm2 = self.norm2(x)
+        x_modulated2 = modulate(x_norm2, shift_mlp, scale_mlp)
+        mlp_x = self.mlp(x_modulated2)
+        x = x + (gate_mlp[:, None] * mlp_x)
+        return x
