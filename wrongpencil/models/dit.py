@@ -223,22 +223,49 @@ class DITBlock(nnx.Module):
         )
 
     def __call__(self, x, c):
-        # calculate adaLN modulation parameters
         c = nnx.silu(c)
         c = self.adaLN_modulation(c)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(
             c, 6, axis=-1
         )
 
-        # attention residual
         x_norm = self.norm1(x)
         x_modulated = modulate(x_norm, shift_msa, scale_msa)
         attn_x = self.attention(x_modulated)
         x = x + (gate_msa[:, None] * attn_x)
 
-        # MLP residual
         x_norm2 = self.norm2(x)
         x_modulated2 = modulate(x_norm2, shift_mlp, scale_mlp)
         mlp_x = self.mlp(x_modulated2)
         x = x + (gate_mlp[:, None] * mlp_x)
         return x
+
+
+class FinalLayer(nnx.Module):
+    def __init__(
+        self, patch_size: int, out_channels: int, hidden_size: int, *, rngs: nnx.Rngs
+    ):
+        dense_kernel_init = nnx.initializers.constant(0)
+        self.dense = nnx.Linear(
+            in_features=hidden_size,
+            out_features=2 * hidden_size,
+            kernel_init=dense_kernel_init,
+            rngs=rngs,
+        )
+        self.adaLN_modulation_init = nnx.initializers.constant(0)
+        self.adaLN_modulation = nnx.Linear(
+            in_features=hidden_size,
+            out_features=patch_size * patch_size * out_channels,
+            kernel_init=self.adaLN_modulation,
+            rngs=rngs,
+        )
+        self.layer_norm = nnx.LayerNorm(use_bias=False, use_scale=False)
+
+    def __call__(self, x, c):
+        c = nnx.silu(c)
+        c = self.dense(c)
+        shift, scale = jnp.split(c, 2, axis=-1)
+
+        x = self.layer_norm(x)
+        x = modulate(x, shift, scale)
+        return self.adaLN_modulation(x)
