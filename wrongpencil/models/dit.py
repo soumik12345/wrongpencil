@@ -2,6 +2,7 @@ import math
 from typing import Any, Callable
 
 import jax
+from einops import rearrange
 from flax import nnx
 from jax import lax, numpy as jnp
 
@@ -134,4 +135,41 @@ class MLPBlock(nnx.Module):
         x = self.dense_2(x)
         if self.dropout_rate is not None:
             x = self.dropout_2(x)
+        return x
+
+
+class PatchEmbed(nnx.Module):
+    def __init__(
+        self,
+        in_features: int,
+        patch_size: int,
+        embedding_dimension: int,
+        use_bias: bool = True,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.in_features = in_features
+        self.patch_size = patch_size
+        self.embedding_dimension = embedding_dimension
+        self.use_bias = use_bias
+        conv_kernel_init = nnx.initializers.xavier_uniform()
+        self.conv = nnx.Conv(
+            in_features=in_features,
+            out_features=embedding_dimension,
+            kernel_size=(patch_size, patch_size),
+            strides=(patch_size, patch_size),
+            use_bias=use_bias,
+            padding="VALID",
+            kernel_init=conv_kernel_init,
+            rngs=rngs,
+        )
+
+    def __call__(self, x):
+        _, height, width, _ = x.shape
+        num_height_patches = height // self.patch_size
+        num_width_patches = width // self.patch_size
+        x = self.conv(x)
+        x = rearrange(
+            x, "b h w c -> b (h w) c", h=num_height_patches, w=num_width_patches
+        )
         return x
