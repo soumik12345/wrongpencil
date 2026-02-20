@@ -1,4 +1,5 @@
 import math
+from typing import Any, Callable
 
 import jax
 from flax import nnx
@@ -89,3 +90,48 @@ class LabelEmbedder(nnx.Module):
             labels = self.token_drop(labels, force_drop_ids)
         embeddings = self.embedding_table(labels)
         return embeddings
+
+
+class MLPBlock(nnx.Module):
+    def __init__(
+        self,
+        in_features: int,
+        mlp_dimension: int,
+        output_dimesion: int | None = None,
+        dropout_rate: float | None = None,
+        dtype: Any = jnp.float32,
+        kernel_init: Callable = nnx.initializers.xavier_normal(),
+        bias_init: Callable = nnx.initializers.normal(stddev=1e-6),
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.dropout_rate = dropout_rate
+        self.dense_1 = nnx.Linear(
+            in_features=in_features,
+            out_features=mlp_dimension,
+            dtype=dtype,
+            kernel_init=kernel_init,
+            bias_init=bias_init,
+            rngs=rngs,
+        )
+        self.dense_2 = nnx.Linear(
+            in_features=mlp_dimension,
+            out_features=in_features if output_dimesion is None else output_dimesion,
+            dtype=dtype,
+            kernel_init=kernel_init,
+            bias_init=bias_init,
+            rngs=rngs,
+        )
+        if dropout_rate is not None:
+            self.dropout_1 = nnx.Dropout(rate=dropout_rate)
+            self.dropout_2 = nnx.Dropout(rate=dropout_rate)
+
+    def __call__(self, x):
+        x = self.dense_1(x)
+        x = nnx.gelu(x)
+        if self.dropout_rate is not None:
+            x = self.dropout_1(x)
+        x = self.dense_2(x)
+        if self.dropout_rate is not None:
+            x = self.dropout_2(x)
+        return x
