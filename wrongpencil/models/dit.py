@@ -36,7 +36,19 @@ class TimeStepEmbedder(nnx.Module):
             rngs=rngs,
         )
 
-    def create_sinusoidal_timestep_embedding(self, timestep, max_period: int = 10000):
+    def create_sinusoidal_timestep_embedding(
+        self, timestep: jnp.ndarray, max_period: int = 10000
+    ) -> jnp.ndarray:
+        """
+        Creates sinusoidal embeddings for timesteps.
+
+        Args:
+            timestep (jnp.ndarray): Timesteps to embed.
+            max_period (int): Maximum period for sinusoidal embedding.
+
+        Returns:
+            jnp.ndarray: Sinusoidal embeddings.
+        """
         timestep = lax.convert_element_type(timestep, jnp.float32)
         half_dim = self.frequency_embedding_size // 2
         frequencies = jnp.exp(
@@ -48,7 +60,16 @@ class TimeStepEmbedder(nnx.Module):
         embedding = jnp.concatenate([jnp.cos(args), jnp.sin(args)], axis=-1)
         return embedding
 
-    def __call__(self, timestep):
+    def __call__(self, timestep: jnp.ndarray) -> jnp.ndarray:
+        """
+        Forward pass for the timestep embedder.
+
+        Args:
+            timestep (jnp.ndarray): Timesteps to embed.
+
+        Returns:
+            jnp.ndarray: Sinusoidal embeddings.
+        """
         x = self.create_sinusoidal_timestep_embedding(timestep)
         x = self.dense_1(x)
         x = nnx.silu(x)
@@ -57,6 +78,16 @@ class TimeStepEmbedder(nnx.Module):
 
 
 class LabelEmbedder(nnx.Module):
+    """
+    Embeds class labels into the vector representation.
+
+    Args:
+        dropout_probas (float): Dropout probability for class labels.
+        num_classes (int): Number of class labels.
+        hidden_size (int): Hidden dimension.
+        rngs (nnx.Rngs): Rng keys.
+    """
+
     def __init__(
         self,
         dropout_probas: float,
@@ -77,16 +108,46 @@ class LabelEmbedder(nnx.Module):
             rngs=self.rngs,
         )
 
-    def token_drop(self, labels, force_drop_ids: int | None = None):
+    def token_drop(
+        self, labels: jnp.ndarray, force_drop_ids: int | None = None
+    ) -> jnp.ndarray:
+        """
+        Drops tokens based on the dropout probability.
+
+        Args:
+            labels (jnp.ndarray): Labels to drop.
+            force_drop_ids (int | None): Force drop ids.
+
+        Returns:
+            jnp.ndarray: Labels after dropping.
+        """
         drop_ids = (
-            jax.random.bernoulli(self.rngs, self.dropout_probas, (labels.shape[0],))
+            jax.random.bernoulli(
+                self.rngs.dropout(), self.dropout_probas, (labels.shape[0],)
+            )
             if force_drop_ids is None
             else force_drop_ids == 1
         )
         labels = jnp.where(drop_ids, self.num_classes, labels)
         return labels
 
-    def __call__(self, labels, train: bool = False, force_drop_ids: int | None = None):
+    def __call__(
+        self,
+        labels: jnp.ndarray,
+        train: bool = False,
+        force_drop_ids: int | None = None,
+    ) -> jnp.ndarray:
+        """
+        Forward pass for the label embedder.
+
+        Args:
+            labels (jnp.ndarray): Labels to embed.
+            train (bool): Whether the model is in training mode.
+            force_drop_ids (int | None): Force drop ids.
+
+        Returns:
+            jnp.ndarray: Embeddings.
+        """
         if (train and self.dropout_probas > 0) or (force_drop_ids is not None):
             labels = self.token_drop(labels, force_drop_ids)
         embeddings = self.embedding_table(labels)
@@ -94,6 +155,20 @@ class LabelEmbedder(nnx.Module):
 
 
 class MLPBlock(nnx.Module):
+    """
+    MLP block for the DIT model.
+
+    Args:
+        in_features (int): Input features.
+        mlp_dimension (int): MLP dimension.
+        output_dimesion (int | None): Output dimension.
+        dropout_rate (float | None): Dropout rate.
+        dtype (Any): Data type.
+        kernel_init (Callable): Kernel initialization.
+        bias_init (Callable): Bias initialization.
+        rngs (nnx.Rngs): RNGs.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -127,7 +202,16 @@ class MLPBlock(nnx.Module):
             self.dropout_1 = nnx.Dropout(rate=dropout_rate)
             self.dropout_2 = nnx.Dropout(rate=dropout_rate)
 
-    def __call__(self, x):
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        """
+        Forward pass for the MLP block.
+
+        Args:
+            x (jnp.ndarray): Input tensor.
+
+        Returns:
+            jnp.ndarray: Output tensor.
+        """
         x = self.dense_1(x)
         x = nnx.gelu(x)
         if self.dropout_rate is not None:
@@ -139,6 +223,17 @@ class MLPBlock(nnx.Module):
 
 
 class PatchEmbed(nnx.Module):
+    """
+    Patch embedding for the DIT model.
+
+    Args:
+        in_features (int): Input features.
+        patch_size (int): Patch size.
+        embedding_dimension (int): Embedding dimension.
+        use_bias (bool): Whether to use bias.
+        rngs (nnx.Rngs): RNGs.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -164,7 +259,16 @@ class PatchEmbed(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, x):
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        """
+        Forward pass for the patch embedding module.
+
+        Args:
+            x (jnp.ndarray): Input tensor.
+
+        Returns:
+            jnp.ndarray: Output tensor.
+        """
         _, height, width, _ = x.shape
         num_height_patches = height // self.patch_size
         num_width_patches = width // self.patch_size
@@ -175,11 +279,48 @@ class PatchEmbed(nnx.Module):
         return x
 
 
-def modulate(x, shift, scale):
+def _get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
+    assert embed_dim % 2 == 0
+    omega = jnp.arange(embed_dim // 2, dtype=jnp.float32) / (embed_dim / 2.0)
+    omega = 1.0 / (10000**omega)  # (D/2,)
+    out = jnp.einsum("m,d->md", pos.reshape(-1), omega)  # (M, D/2)
+    return jnp.concatenate([jnp.sin(out), jnp.cos(out)], axis=1)  # (M, D)
+
+
+def get_2d_sincos_pos_embed(embed_dim: int, num_patches: int) -> jnp.ndarray:
+    """Returns a fixed 2D sinusoidal positional embedding of shape (num_patches, embed_dim).
+
+    Args:
+        embed_dim (int): Embedding dimension.
+        num_patches (int): Number of patches.
+
+    Returns:
+        jnp.ndarray: 2D sinusoidal positional embedding of shape (num_patches, embed_dim).
+    """
+    grid_size = int(num_patches**0.5)
+    grid_h = jnp.arange(grid_size, dtype=jnp.float32)
+    grid_w = jnp.arange(grid_size, dtype=jnp.float32)
+    grid_w, grid_h = jnp.meshgrid(grid_w, grid_h)  # each (grid_size, grid_size)
+    emb_h = _get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid_h)  # (N, D/2)
+    emb_w = _get_1d_sincos_pos_embed_from_grid(embed_dim // 2, grid_w)  # (N, D/2)
+    return jnp.concatenate([emb_w, emb_h], axis=1)  # (N, D)
+
+
+def modulate(x: jnp.ndarray, shift: jnp.ndarray, scale: jnp.ndarray) -> jnp.ndarray:
     return x * (1 + scale[:, None]) + shift[:, None]
 
 
 class DITBlock(nnx.Module):
+    """
+    DIT block for the DIT model.
+
+    Args:
+        hidden_size (int): Hidden dimension.
+        num_heads (int): Number of heads.
+        mlp_ratio (float): MLP ratio.
+        rngs (nnx.Rngs): RNGs.
+    """
+
     def __init__(
         self,
         hidden_size: int,
@@ -222,7 +363,17 @@ class DITBlock(nnx.Module):
             rngs=rngs,
         )
 
-    def __call__(self, x, c):
+    def __call__(self, x: jnp.ndarray, c: jnp.ndarray) -> jnp.ndarray:
+        """
+        Forward pass for the DIT block.
+
+        Args:
+            x (jnp.ndarray): Input tensor.
+            c (jnp.ndarray): Conditioning tensor.
+
+        Returns:
+            jnp.ndarray: Output tensor.
+        """
         c = nnx.silu(c)
         c = self.adaLN_modulation(c)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(
@@ -242,6 +393,16 @@ class DITBlock(nnx.Module):
 
 
 class FinalLayer(nnx.Module):
+    """
+    Final layer for the DIT model.
+
+    Args:
+        patch_size (int): Patch size.
+        out_channels (int): Output channels.
+        hidden_size (int): Hidden dimension.
+        rngs (nnx.Rngs): RNGs.
+    """
+
     def __init__(
         self, patch_size: int, out_channels: int, hidden_size: int, *, rngs: nnx.Rngs
     ):
@@ -256,12 +417,24 @@ class FinalLayer(nnx.Module):
         self.adaLN_modulation = nnx.Linear(
             in_features=hidden_size,
             out_features=patch_size * patch_size * out_channels,
-            kernel_init=self.adaLN_modulation,
+            kernel_init=self.adaLN_modulation_init,
             rngs=rngs,
         )
-        self.layer_norm = nnx.LayerNorm(use_bias=False, use_scale=False)
+        self.layer_norm = nnx.LayerNorm(
+            num_features=hidden_size, use_bias=False, use_scale=False
+        )
 
-    def __call__(self, x, c):
+    def __call__(self, x: jnp.ndarray, c: jnp.ndarray) -> jnp.ndarray:
+        """
+        Forward pass for the final layer.
+
+        Args:
+            x (jnp.ndarray): Input tensor.
+            c (jnp.ndarray): Conditioning tensor.
+
+        Returns:
+            jnp.ndarray: Output tensor.
+        """
         c = nnx.silu(c)
         c = self.dense(c)
         shift, scale = jnp.split(c, 2, axis=-1)
@@ -269,3 +442,128 @@ class FinalLayer(nnx.Module):
         x = self.layer_norm(x)
         x = modulate(x, shift, scale)
         return self.adaLN_modulation(x)
+
+
+class DiffusionTransformer(nnx.Module):
+    """Diffusion model with a Transformer backbone.
+
+    Args:
+        input_size (int): Spatial resolution of the input image (height == width).
+        patch_size (int): Size of each patch.
+        in_channels (int): Number of input image channels.
+        hidden_size (int): Transformer hidden dimension.
+        depth (int): Number of DiT blocks.
+        num_heads (int): Number of attention heads.
+        mlp_ratio (float): MLP hidden-dim multiplier.
+        class_dropout_prob (float): Dropout probability for class labels.
+        num_classes (int): Number of class labels.
+        learn_sigma (bool): If True, the model predicts both mean and variance.
+        rngs (nnx.Rngs): Rng keys.
+    """
+
+    def __init__(
+        self,
+        input_size: int,
+        patch_size: int,
+        in_channels: int,
+        hidden_size: int,
+        depth: int,
+        num_heads: int,
+        mlp_ratio: float,
+        class_dropout_prob: float,
+        num_classes: int,
+        learn_sigma: bool = False,
+        *,
+        rngs: nnx.Rngs,
+    ):
+        self.patch_size = patch_size
+        self.learn_sigma = learn_sigma
+        self.out_channels = in_channels * 2 if learn_sigma else in_channels
+
+        num_patches = (input_size // patch_size) ** 2
+        pos_embed_val = get_2d_sincos_pos_embed(hidden_size, num_patches)
+        self.pos_embed = nnx.Variable(pos_embed_val)
+
+        self.patch_embed = PatchEmbed(
+            in_features=in_channels,
+            patch_size=patch_size,
+            embedding_dimension=hidden_size,
+            rngs=rngs,
+        )
+        self.timestep_embedder = TimeStepEmbedder(hidden_size=hidden_size, rngs=rngs)
+        self.label_embedder = LabelEmbedder(
+            dropout_probas=class_dropout_prob,
+            num_classes=num_classes,
+            hidden_size=hidden_size,
+            rngs=rngs,
+        )
+        self.dit_blocks = [
+            DITBlock(
+                hidden_size=hidden_size,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                rngs=rngs,
+            )
+            for _ in range(depth)
+        ]
+        self.final_layer = FinalLayer(
+            patch_size=patch_size,
+            out_channels=self.out_channels,
+            hidden_size=hidden_size,
+            rngs=rngs,
+        )
+
+    def __call__(
+        self, image, timestep, label, train: bool = False, force_drop_ids=None
+    ):
+        """
+        Forward pass for the DIT model.
+
+        Args:
+            image (jnp.ndarray): Input image.
+            timestep (jnp.ndarray): Timestep.
+            label (jnp.ndarray): Label.
+            train (bool): Whether the model is in training mode.
+            force_drop_ids (int | None): Force drop ids.
+
+        Returns:
+            jnp.ndarray: Output tensor.
+        """
+        # image: (B, H, W, C), timestep: (B,), label: (B,)
+        batch_size = image.shape[0]
+        input_size = image.shape[1]
+        num_patches_side = input_size // self.patch_size
+
+        x = self.patch_embed(image)
+        x = x + lax.stop_gradient(self.pos_embed.value)
+
+        timestep_embedding = self.timestep_embedder(timestep)
+        label_embedding = self.label_embedder(
+            label, train=train, force_drop_ids=force_drop_ids
+        )
+        condition_embedding = timestep_embedding + label_embedding
+
+        for block in self.dit_blocks:
+            x = block(x, condition_embedding)
+
+        x = self.final_layer(x, condition_embedding)
+
+        x = jnp.reshape(
+            x,
+            (
+                batch_size,
+                num_patches_side,
+                num_patches_side,
+                self.patch_size,
+                self.patch_size,
+                self.out_channels,
+            ),
+        )
+        x = jnp.einsum("bhwpqc->bhpwqc", x)
+        x = rearrange(
+            x,
+            "B H P W Q C -> B (H P) (W Q) C",
+            H=num_patches_side,
+            W=num_patches_side,
+        )
+        return x
