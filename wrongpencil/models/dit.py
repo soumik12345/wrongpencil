@@ -445,7 +445,8 @@ class FinalLayer(nnx.Module):
 
 
 class DiffusionTransformer(nnx.Module):
-    """Diffusion model with a Transformer backbone.
+    """Diffusion Transformer model as proposed by
+    [Scalable Diffusion Models with Transformers](https://arxiv.org/abs/2212.09748).
 
     Args:
         input_size (int): Spatial resolution of the input image (height == width).
