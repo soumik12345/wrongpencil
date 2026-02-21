@@ -1,3 +1,11 @@
+"""
+References:
+    - https://arxiv.org/abs/2212.09748
+    - https://github.com/facebookresearch/DiT/blob/main/models.py
+    - https://github.com/kvfrans/jax-diffusion-transformer/blob/main/diffusion_transformer.py
+
+"""
+
 import math
 from typing import Any, Callable
 
